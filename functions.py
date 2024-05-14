@@ -242,7 +242,7 @@ class Phi_Layer(tf.keras.layers.Layer):
         self.G = G
 
     def build(self, input_shape):
-        self.kernel_Kron2 = self.add_weight("kernel_Kron2", shape=[self.Nt*self.Nr, (self.G)**2, 2], trainable=False)
+        self.kernel_Kron2 = self.add_weight(name="kernel_Kron2", shape=[self.Nt*self.Nr, (self.G)**2, 2], trainable=False)
 
     def call(self, input):
         W_real = input[0][:, :, :, 0]
@@ -279,10 +279,10 @@ class Phi_Layer_joint_opt(tf.keras.layers.Layer):
         self.num_sc = num_sc
 
     def build(self, input_shape):
-        self.kernel_W = self.add_weight("kernel_W", shape=[self.Nr, self.Mr], trainable=True)
+        self.kernel_W = self.add_weight(name="kernel_W", shape=[self.Nr, self.Mr], trainable=True)
                                         #initializer=tf.random_uniform_initializer(0,2*math.pi))
-        self.kernel_F = self.add_weight("kernel_F", shape=[self.Nt, self.Mt], trainable=True)
-        self.kernel_Kron2 = self.add_weight("kernel_Kron2", shape=[self.Nt * self.Nr, (self.G) ** 2, 2],
+        self.kernel_F = self.add_weight(name="kernel_F", shape=[self.Nt, self.Mt], trainable=True)
+        self.kernel_Kron2 = self.add_weight(name="kernel_Kron2", shape=[self.Nt * self.Nr, (self.G) ** 2, 2],
                                             trainable=False)
 
     def call(self, input):
@@ -352,10 +352,10 @@ class Phi_Layer_joint_opt_fixed(tf.keras.layers.Layer):
         self.num_sc = num_sc
 
     def build(self, input_shape):
-        self.kernel_W = self.add_weight("kernel_W", shape=[self.Nr, self.Mr], trainable=False)
+        self.kernel_W = self.add_weight(name="kernel_W", shape=[self.Nr, self.Mr], trainable=False)
                                         #initializer=tf.random_uniform_initializer(0,2*math.pi))
-        self.kernel_F = self.add_weight("kernel_F", shape=[self.Nt, self.Mt], trainable=False)
-        self.kernel_Kron2 = self.add_weight("kernel_Kron2", shape=[self.Nt * self.Nr, (self.G) ** 2, 2],
+        self.kernel_F = self.add_weight(name="kernel_F", shape=[self.Nt, self.Mt], trainable=False)
+        self.kernel_Kron2 = self.add_weight(name="kernel_Kron2", shape=[self.Nt * self.Nr, (self.G) ** 2, 2],
                                             trainable=False)
 
     def call(self, input):
@@ -428,9 +428,9 @@ class Phi_Layer_joint_opt_single_sc(tf.keras.layers.Layer):
         self.N_r_RF = N_r_RF
 
     def build(self, input_shape):
-        self.kernel_W = self.add_weight("kernel_W", shape=[self.Nr, self.Mr], trainable=True,\
+        self.kernel_W = self.add_weight(name="kernel_W", shape=[self.Nr, self.Mr], trainable=True,\
                                         initializer=tf.random_uniform_initializer(0,2*math.pi))
-        self.kernel_F = self.add_weight("kernel_F", shape=[self.Nt, self.Mt], trainable=True, \
+        self.kernel_F = self.add_weight(name="kernel_F", shape=[self.Nt, self.Mt], trainable=True, \
                                         initializer=tf.random_uniform_initializer(0, 2 * math.pi))
 
     def call(self, input):
