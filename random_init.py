@@ -11,7 +11,7 @@ from tensorflow.keras.callbacks import ReduceLROnPlateau, EarlyStopping, ModelCh
 
 from scipy import io
 
-from functions import dictionary,Phi_Layer,update_mu_Sigma,circular_padding_2d,A_R_Layer,A_T_Layer
+from functions import dictionary,Phi_Layer,update_mu_Sigma,circular_padding_2d,A_R_Layer,A_T_Layer, get_T1_T2
 
 import argparse
 
@@ -19,20 +19,21 @@ import argparse
 #%% Load channel
 parser = argparse.ArgumentParser()
 
-parser.add_argument('-Mr')
-parser.add_argument('-Mt')
-parser.add_argument('-SNR')
-parser.add_argument('-data_num')
-parser.add_argument('-test_num')
-parser.add_argument('-epochs')
-parser.add_argument('-gpu_index')
+parser.add_argument('-Mr',default=8)
+parser.add_argument('-Mt',default=8)
+parser.add_argument('-SNR',default=20)
+parser.add_argument('-data_num',default=1000)
+parser.add_argument('-test_num',default=1000)
+parser.add_argument('-epochs',default=1000)
+parser.add_argument('-gpu_index',default='0')
 
 args = parser.parse_args()
 
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu_index
-gpus = tf.config.experimental.list_physical_devices('GPU')
-tf.config.experimental.set_memory_growth(gpus[0], True)
+os.environ["CUDA_VISIBLE_DEVICES"] = ""#args.gpu_index
+os.environ["TF_FORCE_GPU_ALLOW_GROWTH"] = "true"
+#gpus = tf.config.experimental.list_physical_devices('GPU')
+#tf.config.experimental.set_memory_growth(device=gpus[0], enable=True)
 
 
 Mr = int(args.Mr) # number of receive beams at the BS
@@ -42,15 +43,15 @@ SNR = int(args.SNR) # SNR
 sigma_2 = 1/10**(SNR/10) # noise variance
 
 resolution = 2 # resolution of angle grids
-Nt = 32
-Nr = 32
+Nt = 16
+Nr = 16
 G = resolution*np.max([Nt,Nr])
 
 data_num = int(args.data_num)
 H_list = io.loadmat('./data/channel.mat')['H_list'][-data_num:]
 
 # fixed parameters
-N_r_RF = 4 # number of receive RF chains at the BS
+N_r_RF = 1 # number of receive RF chains at the BS
 
 num_sc = 8 # number of subcarriers
 
@@ -117,6 +118,77 @@ print(F_list.shape)  # (data_num,Nt,Mt,2)
 print(y_list.shape)  # (data_num,Mr*Mt,num_sc,2)
 print(H_list.shape)  # (data_num,Nr,Nt,num_sc,2)
 
+np.savez("data_to_import",W_list=W_list,F_list=F_list,y_list = y_list,A_R = A_R, A_T = A_T)
+
+
+def SBL_net_T1_T2(Mt, Mr, Nt, Nr, G, num_sc, num_layers, num_filters, kernel_size):
+    W_real_imag = Input(shape=(Nr, Mr, 2))
+    F_real_imag = Input(shape=(Nt, Mt, 2))
+    y_real_imag = Input(shape=(Mt * Mr, num_sc, 2))
+
+    Phi_real_imag = Phi_Layer(Nt, Nr, Mt, Mr, G)([W_real_imag, F_real_imag])
+
+    # of shape (?,G**2,num_sc)
+    alpha_list_init = tf.tile(tf.ones_like(W_real_imag[:, 0, 0:1, 0:1]), (1, G ** 2, num_sc))
+
+    # update mu and Sigma
+    T_1, T_2 = Lambda(lambda x: get_T1_T2(x, num_sc, sigma_2, Mr, Mt))(
+        [Phi_real_imag, y_real_imag, alpha_list_init])
+    
+    alpha_list = alpha_list_init
+
+    for i in range(num_layers):
+        #mu_square = Lambda(lambda x: x[0] ** 2 + x[1] ** 2)([mu_real, mu_imag])
+        alpha_list = Lambda(lambda x: tf.reshape(x,(-1,G**2,num_sc)))(alpha_list)
+        #mu_square = Lambda(lambda x: tf.math.multiply(x[0] ** 2,x[1]))([alpha_list,T_1])
+        #diag_Sigma_real = Lambda(lambda x: x[0] -tf.math.multiply(x[0] ** 2,x[1]) )([alpha_list,T_2])
+        # feature tensor of dim (?,G,G,num_sc,2)
+        temp = Lambda(lambda x: tf.concat(x, axis=-1)) \
+            ([tf.reshape(T_1, (-1, G, G, num_sc, 1)), tf.reshape(T_2, (-1, G, G, num_sc, 1)),\
+               tf.reshape(alpha_list, (-1, G, G, num_sc, 1))])
+        
+        #temp = Lambda(lambda x: tf.concat(x, axis=-1)) \
+        #    ([tf.reshape(mu_square, (-1, G, G, num_sc, 1)), tf.reshape(diag_Sigma_real, (-1, G, G, num_sc, 1))],\
+        #     tf.reshape(alpha_list, (-1, G, G, num_sc, 1)))
+        
+        # 3D Convolution, with circular padding, conv padding should use "valid" not "same"
+        conv_layer1 = Conv3D(name='SBL_%d1'%i,filters=num_filters,kernel_size=kernel_size,strides=1,padding='valid',activation='relu')
+        conv_layer2 = Conv3D(name='SBL_%d2'%i,filters=1,kernel_size=kernel_size,strides=1,padding='valid',activation='relu')
+
+        temp = circular_padding_2d(temp, kernel_size=kernel_size, strides=1)
+        temp = conv_layer1(temp)
+
+        temp = circular_padding_2d(temp, kernel_size=kernel_size, strides=1)
+        alpha_list = conv_layer2(temp)
+
+        # update mu and Sigma
+        #mu_real, mu_imag, diag_Sigma_real = Lambda(lambda x: update_mu_Sigma(x, num_sc, sigma_2, Mr, Mt)) \
+        #    ([Phi_real_imag, y_real_imag, tf.reshape(alpha_list, (-1, G ** 2, num_sc))])
+        T_1,T_2 = Lambda(lambda x: get_T1_T2(x, num_sc, sigma_2, Mr, Mt)) \
+            ([Phi_real_imag, y_real_imag, tf.reshape(alpha_list, (-1, G ** 2, num_sc))])
+    
+
+    mu_real, mu_imag, diag_Sigma_real = Lambda(lambda x: update_mu_Sigma(x, num_sc, sigma_2, Mr, Mt)) \
+            ([Phi_real_imag, y_real_imag, tf.reshape(alpha_list, (-1, G ** 2, num_sc))])
+    
+    x_hat = Lambda(lambda x: tf.concat([tf.expand_dims(x[0], axis=-1), tf.expand_dims(x[1], axis=-1)], axis=-1))(
+        [mu_real, mu_imag])
+    X_hat = Reshape((G, G, num_sc, 2))(x_hat)
+
+    # remove the effect of vectorization
+    X_hat = Lambda(lambda x: tf.transpose(x, (0, 2, 1, 3, 4)),name='X_hat')(X_hat)
+
+    X_hat = Reshape((G, G * num_sc, 2))(X_hat)
+    H_hat = A_R_Layer(Nr, G)(X_hat)
+    H_hat = Reshape((Nr, G, num_sc, 2))(H_hat)
+    H_hat = Lambda(lambda x: tf.transpose(x, (0, 3, 1, 2, 4)))(H_hat)
+    H_hat = Reshape((num_sc * Nr, G, 2))(H_hat)
+    H_hat = A_T_Layer(Nt, G)(H_hat)
+    H_hat = Reshape((num_sc, Nr, Nt, 2))(H_hat)
+    H_hat = Lambda(lambda x: tf.transpose(x, (0, 2, 3, 1, 4)))(H_hat)
+
+    model = Model(inputs=[W_real_imag, F_real_imag, y_real_imag], outputs=H_hat)
+    return model
 
 
 #%% construct the network
@@ -131,15 +203,19 @@ def SBL_net(Mt, Mr, Nt, Nr, G, num_sc, num_layers, num_filters, kernel_size):
     alpha_list_init = tf.tile(tf.ones_like(W_real_imag[:, 0, 0:1, 0:1]), (1, G ** 2, num_sc))
 
     # update mu and Sigma
-    mu_real, mu_imag, diag_Sigma_real = Lambda(lambda x: update_mu_Sigma(x, num_sc, sigma_2, Mr, Mt))(
+    #mu_real, mu_imag, diag_Sigma_real = Lambda(lambda x: update_mu_Sigma(x, num_sc, sigma_2, Mr, Mt))(
+    #    [Phi_real_imag, y_real_imag, alpha_list_init])
+    T_1_real, T_1_imag, T_2 = Lambda(lambda x: get_T1_T2(x, num_sc, sigma_2, Mr, Mt))(
         [Phi_real_imag, y_real_imag, alpha_list_init])
+    alpha_list = alpha_list_init
 
     for i in range(num_layers):
-        mu_square = Lambda(lambda x: x[0] ** 2 + x[1] ** 2)([mu_real, mu_imag])
+        T_1 = Lambda(lambda x: x[0] ** 2 + x[1] ** 2)([T_1_real, T_1_imag])
 
         # feature tensor of dim (?,G,G,num_sc,2)
         temp = Lambda(lambda x: tf.concat(x, axis=-1)) \
-            ([tf.reshape(mu_square, (-1, G, G, num_sc, 1)), tf.reshape(diag_Sigma_real, (-1, G, G, num_sc, 1))])
+            ([tf.reshape(T_1, (-1, G, G, num_sc, 1)), tf.reshape(T_2, (-1, G, G, num_sc, 1)),\
+              tf.reshape(alpha_list, (-1, G, G, num_sc, 1))])
 
         # 3D Convolution, with circular padding, conv padding should use "valid" not "same"
         conv_layer1 = Conv3D(name='SBL_%d1'%i,filters=num_filters,kernel_size=kernel_size,strides=1,padding='valid',activation='relu')
@@ -151,6 +227,9 @@ def SBL_net(Mt, Mr, Nt, Nr, G, num_sc, num_layers, num_filters, kernel_size):
         temp = circular_padding_2d(temp, kernel_size=kernel_size, strides=1)
         alpha_list = conv_layer2(temp)
 
+        T_1_real, T_1_imag, T_2 = Lambda(lambda x: get_T1_T2(x, num_sc, sigma_2, Mr, Mt))(
+        [Phi_real_imag, y_real_imag, tf.reshape(alpha_list, (-1, G ** 2, num_sc))])
+        
         # update mu and Sigma
         mu_real, mu_imag, diag_Sigma_real = Lambda(lambda x: update_mu_Sigma(x, num_sc, sigma_2, Mr, Mt)) \
             ([Phi_real_imag, y_real_imag, tf.reshape(alpha_list, (-1, G ** 2, num_sc))])
@@ -182,8 +261,8 @@ model = SBL_net(Mt, Mr, Nt, Nr, G, num_sc, num_layers, num_filters, kernel_size)
 model.summary()
 
 epochs = int(args.epochs)
-batch_size = 16
-best_model_path = './models/best_Mr_%d_Mt_%d_SNR_%d_random_init.h5'%(Mr,Mt,SNR)
+batch_size = 1024
+best_model_path = './models/best_Mr_%d_Mt_%d_SNR_%d_random_init_T1_T2.h5'%(Mr,Mt,SNR)
 
 # weight initialization
 Kron2 = np.kron(np.conjugate(A_T),A_R)
@@ -206,7 +285,7 @@ for layer in model.layers:
 
 # define callbacks
 checkpointer = ModelCheckpoint(best_model_path, verbose=1, save_best_only=True, save_weights_only=True)
-reduce_lr = ReduceLROnPlateau(monitor='val_loss', factor=0.1, patience=2, verbose=1, mode='auto',
+reduce_lr = ReduceLROnPlateau(monitor='val_loss', factor=0.1, patience=5, verbose=1, mode='auto',
                               min_delta=1e-5, min_lr=1e-5)
 early_stopping = EarlyStopping(monitor='val_loss', min_delta=1e-5, patience=3)
 
@@ -225,7 +304,7 @@ for layer in model.layers:
         print('Save Conv weights')
         weight_dict[layer.name] = layer.get_weights()
 
-np.save('./results/weight_dict_Mr_%d_Mt_%d_SNR_%d_random_init.npy'%(Mr,Mt,SNR),weight_dict)
+np.save('./results/weight_dict_Mr_%d_Mt_%d_SNR_%d_random_init_T1_T2.npy'%(Mr,Mt,SNR),weight_dict)
 print('Weight dict saved!')
 
 
@@ -246,7 +325,7 @@ nmse = error_nmse / test_num
 print(mse)
 print(nmse)
 
-file_handle=open('./results/Performance_Mr_%d_Mt_%d.txt'%(Mr,Mt),mode='a+')
+file_handle=open('./results/Performance_Mr_%d_Mt_%d_T1_T2.txt'%(Mr,Mt),mode='a+')
 file_handle.write('Random init, SNR=%d dB:\n'%SNR)
 file_handle.write(str([mse,nmse]))
 file_handle.write('\n')

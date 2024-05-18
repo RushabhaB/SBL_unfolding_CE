@@ -159,7 +159,42 @@ def circular_padding_single_sc(x, kernel_size, strides):
 
     return conc
 
+def get_T1_T2(inputs,num_sc,sigma_2,Mr,Mt):
+    if len(inputs[0].shape)==4:
+        Phi = tf.cast(inputs[0][:, :, :, 0], tf.complex64) + 1j * tf.cast(inputs[0][:, :, :, 1], tf.complex64)
+    if len(inputs[0].shape)==3:
+        Phi = tf.cast(inputs[0][:, :, 0], tf.complex64) + 1j * tf.cast(inputs[0][:, :, 1], tf.complex64)
+    y_list = tf.cast(inputs[1][:, :, :, 0], tf.complex64) + 1j * tf.cast(inputs[1][:, :, :, 1], tf.complex64)
+    alpha_list = tf.cast(inputs[2], tf.complex64)
 
+    T_1_imag_list=[]
+    T_1_real_list=[]
+    T_2_list=[]
+    
+    for i in range(num_sc):
+        y = y_list[:, :, i:i + 1]
+        if len(Phi.shape)==3:
+            Rx_PhiH = tf.multiply(alpha_list[:, :, i:i + 1], tf.transpose(Phi, (0, 2, 1), conjugate=True))
+            PhiH =  tf.transpose(Phi, (0, 2, 1), conjugate=True)
+        if len(Phi.shape)==2:
+            Rx_PhiH = tf.multiply(alpha_list[:, :, i:i + 1], tf.transpose(Phi, conjugate=True))
+            PhiH = tf.transpose(Phi, conjugate=True)
+        inv = tf.linalg.inv(
+            tf.matmul(Phi, Rx_PhiH) + sigma_2 * tf.eye(Mr * Mt, dtype=tf.complex64))
+        
+        temp = tf.matmul(PhiH,inv)
+        T_1 = tf.matmul(temp,y)
+        T_2 = tf.math.real(tf.einsum('bij,bji->bi',temp,Phi))
+
+        T_1_real_list.append(tf.math.real(T_1))
+        T_1_imag_list.append(tf.math.imag(T_1))
+        T_2_list.append(tf.expand_dims(T_2,axis=-1))
+
+    T_1_real_list = tf.concat(T_1_real_list,axis=-1)
+    T_1_imag_list = tf.concat(T_1_imag_list,axis=-1)
+    T_2_list = tf.concat(T_2_list,axis=-1)
+
+    return T_1_real_list, T_1_imag_list,T_2_list
 
 def update_mu_Sigma(inputs,num_sc,sigma_2,Mr,Mt):
     if len(inputs[0].shape)==4:

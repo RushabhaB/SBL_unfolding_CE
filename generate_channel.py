@@ -9,7 +9,7 @@ import argparse
 #%%
 parser = argparse.ArgumentParser()
 
-parser.add_argument('-data_num')
+parser.add_argument('-data_num',default=10000)
 
 args = parser.parse_args()
 
@@ -19,8 +19,8 @@ Nc = 3 # number of clusters
 Np = 10 # number of sub-paths in a cluster
 AS = 5 # angular spread of each cluster
 
-Nt = 32 # number of antennas at the user
-Nr = 32 # number of antennas at the BS
+Nt = 16 # number of antennas at the user
+Nr = 16 # number of antennas at the BS
 
 fc = 28*1e9 # central frequency
 W = 4*1e9 # bandwidth
